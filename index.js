@@ -1,77 +1,38 @@
-const APPROVE = "APPROVE";
-const MANUAL_MERGE_MESSAGE = "merge this manually";
-const RENOVATE_BOT = "renovate[bot]";
-const RENOVATE_APPROVE_BOT = "renovate-approve[bot]";
+const defaultConfig = require('./lib/defaultConfig')
+const getConfig = require('probot-config')
 
-function isRenovateApproved(context) {
-  return context && context.payload && context.payload.review;
+const renameProp = (
+  oldProp,
+  newProp,
+  { [oldProp]: old, ...others }
+) => {
+  return {
+    [newProp]: old,
+    ...others
+  }
 }
 
 module.exports = app => {
-  app.log("App is loaded");
-  function isRenovate(context) {
+  app.log('App is loaded')
+
+  function approvePr (context) {
     try {
-      return context.payload.sender.login === RENOVATE_BOT;
+      return context.github.pullRequests.createReview(renameProp('number', 'pull_number', context.issue({ event: 'APPROVE' })))
     } catch (err) {
-      app.log(context.payload);
-      app.log(err);
-      return false;
+      app.log(err)
     }
   }
 
-  function isAutomerging(context) {
-    try {
-      return !context.payload.pull_request.body.includes(MANUAL_MERGE_MESSAGE);
-    } catch (err) {
-      app.log(context.payload);
-      app.log(err);
-      return false;
+  app.on(['pull_request.opened', 'pull_request_review.dismissed'], async context => {
+    const config = await getConfig(context, 'auto-approve.yml', defaultConfig)
+
+    if (!config.autoApproveDependabot && !config.autoApproveRenovatebot) {
+      return
     }
-  }
-  function isRenovateApprover(context) {
-    try {
-      return context.payload.review.user.login === RENOVATE_APPROVE_BOT;
-    } catch (err) {
-      app.log(err);
-      return false;
+
+    if ((config.autoApproveDependabot && config.dependabotLogin && context.payload.pull_request.user.login === config.dependabotLogin) ||
+        (config.autoApproveRenovatebot && config.renovatebotLogin && context.payload.pull_request.user.login === config.renovatebotLogin)) {
+      return approvePr(context)
     }
-  }
-  function isRenovateUser(context) {
-    try {
-      return context.payload.pull_request.user.login === RENOVATE_BOT;
-    } catch (err) {
-      app.log(context.payload);
-      app.log(err);
-      return false;
-    }
-  }
-  function approvePr(context) {
-    try {
-      const params = context.issue({ event: APPROVE });
-      return context.github.pullRequests.createReview(params);
-    } catch (err) {
-      app.log(err);
-      app.log(context.payload);
-    }
-  }
-  app.on("pull_request.opened", async context => {
-    app.log("Received PR open event");
-    if (isRenovate(context) && isAutomerging(context)) {
-      app.log("Approving new PR");
-      return approvePr(context);
-    }
-  });
-  app.on("pull_request_review.dismissed", async context => {
-    app.log("Received PR review dismiss event");
-    app.log(context.payload);
-    if (
-      isRenovate(context) &&
-      isAutomerging(context) &&
-      isRenovateApprover(context) &&
-      isRenovateUser(context)
-    ) {
-      app.log("Re-approving dismissed approval");
-      return approvePr(context);
-    }
-  });
-};
+  })
+}
